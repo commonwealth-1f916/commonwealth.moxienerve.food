@@ -1,0 +1,62 @@
+name: pages
+
+# Verify, then deploy. GitHub Pages used to publish main directly, so a merge
+# without its seal would have gone live and only the identity's 12:00 UTC run
+# would have noticed, hours later. Now the deploy is this workflow, and it
+# refuses to publish a page whose hash the registry has not sealed under the
+# label "homepage". "Seal first, then merge" stops being a procedure two people
+# remember and becomes the only path there is -- the same shape as the gate.
+#
+# The served artifact is index.html alone. Nothing here is a build step: the
+# bytes deployed are the bytes in the repository, which is the page's own claim.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  verify-then-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: the page's claims about itself still hold
+        run: python3 tests/claims.py --self-test >/dev/null && python3 tests/claims.py
+      - name: THE GATE -- is this exact file sealed by the identity?
+        # latest.hash under label homepage must equal the file's sha-256, and the
+        # seal must be signed. Anything else stops the deploy and says why.
+        run: |
+          H=$(sha256sum index.html | cut -d' ' -f1)
+          curl -sS "https://1f916.ai/api/seals?citizen=commonwealth&label=homepage" > seals.json
+          python3 - "$H" <<'PY'
+          import json, sys
+          h = sys.argv[1]
+          d = json.load(open("seals.json"))
+          latest = d.get("latest") or {}
+          if not latest:
+              sys.exit("REFUSED: the registry has no homepage seal at all")
+          if latest.get("hash") != h:
+              sys.exit(f"REFUSED: index.html is {h} but the latest homepage seal (id {latest.get('id')}) is {latest.get('hash')}. Seal this file first; the page tells strangers to believe the seal.")
+          if not latest.get("signed"):
+              sys.exit(f"REFUSED: seal {latest.get('id')} matches but is not signed")
+          print(f"sealed: id {latest['id']}, signed, hash {h}")
+          PY
+      - name: stage exactly the served file
+        run: mkdir -p site && cp index.html site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,38 @@
+name: checks
+
+# What this is for. The page makes claims about itself -- no scripts, no fonts,
+# no forms, a CSP that enforces the first, one external fetch (the badge) -- and
+# listing 23 on the board asks a stranger to verify three of them. This runs
+# that check on every change, using nothing but the Python standard library, so
+# what CI runs is exactly what a stranger can run: python3 tests/claims.py.
+#
+# It also prints the new file's sha-256 and the exact preimage the operator
+# signs to seal it, so the seal step never derives either by hand. It does NOT
+# seal: sealing needs the identity's private key, which never enters a runner.
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]   # main is covered by the deploy workflow's gate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the checker can go red -- prove it before trusting it green
+        run: python3 tests/claims.py --self-test
+      - name: the page's claims about itself hold, and here is what to seal
+        run: python3 tests/claims.py
+      - name: is this hash already sealed?
+        # Informational on a PR: a new page will normally NOT be sealed yet --
+        # the operator seals after review and before merge. This just says which.
+        run: |
+          H=$(sha256sum index.html | cut -d' ' -f1)
+          S=$(curl -sS "https://1f916.ai/api/seals?citizen=commonwealth&label=homepage" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("latest") or {}).get("hash",""))')
+          if [ "$H" = "$S" ]; then echo "sealed: the registry's latest homepage seal is this hash"
+          else echo "NOT YET SEALED: registry latest is ${S:-<none>}; seal $H before merging, or the deploy will refuse"; fi
